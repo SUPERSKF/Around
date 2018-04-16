@@ -12,6 +12,7 @@ import (
 	"context"
 	"cloud.google.com/go/storage"
 	"io"
+	"cloud.google.com/go/bigtable"
 )
 
 type Location struct{
@@ -80,12 +81,7 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
 
-
-	// 32 << 20 is the maxMemory param for ParseMultipartForm, equals to 32MB (1MB = 1024 * 1024 bytes = 2^20 bytes)
-	// After you call ParseMultipartForm, the file will be saved in the server memory with maxMemory size.
-	// If the file size is larger than maxMemory, the rest of the data will be saved in a system temporary file.
 	r.ParseMultipartForm(32 << 20)
-
 	// Parse from form data.
 	fmt.Printf("Received one post request %s\n", r.FormValue("message"))
 
@@ -112,7 +108,6 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 
 	ctx := context.Background()
 
-	// replace it with your real bucket name.
 	_, attrs, err := saveToGCS(ctx, file, BUCKET_NAME, id)
 	if err != nil {
 		http.Error(w, "GCS is not setup", http.StatusInternalServerError)
@@ -125,6 +120,32 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 
 	// Save to ES.
 	saveToES(p, id)
+
+	// you must update project name here
+	bt_client, err := bigtable.NewClient(ctx, PROJECT_ID, BT_INSTANCE)
+	if err != nil {
+		panic(err)
+		return
+
+	}
+
+	tbl := bt_client.Open("post")
+	mut := bigtable.NewMutation()
+	t := bigtable.Now()
+
+	mut.Set("post", "user", t, []byte(p.User))
+	mut.Set("post", "message", t, []byte(p.Message))
+	mut.Set("location", "lat", t, []byte(strconv.FormatFloat(p.Location.Lat, 'f', -1, 64)))
+	mut.Set("location", "lon", t, []byte(strconv.FormatFloat(p.Location.Lon, 'f', -1, 64)))
+
+	err = tbl.Apply(ctx, id, mut)
+	if err != nil {
+		panic(err)
+		return
+	}
+	fmt.Printf("Post is saved to BigTable: %s\n", p.Message)
+
+
 
 	// Save to BigTable.
 	//saveToBigTable(p, id)
